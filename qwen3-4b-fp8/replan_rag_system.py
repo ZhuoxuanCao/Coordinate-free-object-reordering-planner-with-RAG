@@ -237,7 +237,9 @@ class ReplanRAGSystem:
         self.knowledge_base = []
         self.rule_embeddings = None
         self._rule_lookup: Dict[str, Dict[str, Any]] = {}
+        self.prompt_templates: Dict[str, str] = {}
         self._load_knowledge_base()
+        self._load_prompt_templates()
 
     def classify_scenario_by_embedding(self, target_spec: Dict[str, Any], current_state: Dict[str, Any]) -> str:
         """基于embedding相似度进行场景分类"""
@@ -728,6 +730,75 @@ class ReplanRAGSystem:
             self.rule_embeddings = self.embedding_model.encode(rule_texts)
             print(f"Loaded {len(self.knowledge_base)} rules from knowledge base")
 
+    def _load_prompt_templates(self):
+        """加载提示词模板文件"""
+        kb_path = Path(__file__).parent / KNOWLEDGE_BASE_DIR
+        prompt_path = kb_path / "prompts"
+
+        if not prompt_path.exists():
+            print(f"[WARNING] Prompts directory not found: {prompt_path}")
+            print(f"[INFO] Creating prompts directory: {prompt_path}")
+            try:
+                prompt_path.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                print(f"[ERROR] Failed to create prompts directory: {e}")
+            return
+
+        # 精确文件名映射
+        template_files = {
+            "top_only": "stack_replacement_top_only.md",
+            "middle_only": "stack_replacement_middle_only.md",
+            "bottom_only": "stack_replacement_bottom_only.md",
+            "extension": "stack_extension.md",
+            "multiple": "stack_replacement_multiple.md"
+        }
+
+        success_count = 0
+        for replacement_type, filename in template_files.items():
+            file_path = prompt_path / filename
+            if file_path.exists():
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    # 提取 "## Specific Prompt Content" 后的内容
+                    specific_content = self._extract_specific_prompt_content(content)
+                    if specific_content:
+                        self.prompt_templates[replacement_type] = specific_content
+                        print(f"[PROMPT] Loaded template for {replacement_type} ({len(specific_content)} lines)")
+                        success_count += 1
+                    else:
+                        print(f"[WARNING] Template {filename} has no content after extraction")
+                except Exception as e:
+                    print(f"[ERROR] Failed to load prompt template {filename}: {e}")
+                    import traceback
+                    print(f"[DEBUG] Full error: {traceback.format_exc()}")
+            else:
+                print(f"[INFO] Template file not found: {file_path} (will use hardcoded fallback)")
+
+        print(f"[PROMPT] Successfully loaded {success_count}/{len(template_files)} prompt templates")
+
+        if success_count < len(template_files):
+            missing = set(template_files.keys()) - set(self.prompt_templates.keys())
+            print(f"[INFO] Missing templates will use hardcoded fallbacks: {missing}")
+
+    def _extract_specific_prompt_content(self, content: str) -> List[str]:
+        """从模板文件中提取具体的提示词内容"""
+        lines = content.split('\n')
+        extracting = False
+        specific_lines = []
+
+        for line in lines:
+            if line.startswith("## Specific Prompt Content"):
+                extracting = True
+                continue
+            elif extracting and line.startswith("##"):
+                # 遇到下一个标题，停止提取
+                break
+            elif extracting:
+                specific_lines.append(line)
+
+        return specific_lines
+
     def _parse_rule_file(self, content: str, file_path: Path) -> Dict[str, Any]:
         """解析单个规则文件"""
         lines = content.split('\n')
@@ -895,7 +966,7 @@ class ReplanRAGSystem:
             target_spec: 目标规范 (未来扩展用)
             current_state: 当前状态 (未来扩展用)
         """
-        # 基础通用提示词（所有堆栈任务共享）
+        # 基础通用提示词（最小化，避免交互影响）
         base_parts = [
             "/no_think",
             "",
@@ -906,153 +977,10 @@ class ReplanRAGSystem:
             "🔴 CRITICAL: Use pure object names (e.g., 'blue cube') without descriptive prefixes.",
             "🔴 CRITICAL: Use correct key names: from/to must use 'type' not 'position' for scattered objects.",
             "",
-            "🔴 === FUNDAMENTAL PHYSICAL CONSTRAINTS === 🔴",
-            "❌ ABSOLUTE PROHIBITION: NEVER place object on occupied position",
-            "❌ ABSOLUTE PROHIBITION: Position must be completely EMPTY before placing new object",
-            "✅ MANDATORY SEQUENCE: Remove existing object FIRST, then place new object SECOND",
-            "✅ ALWAYS use separate actions: one to clear, one to place",
         ]
 
-        # 根据替换类型添加特定的基础约束
-        if replacement_type == "bottom_only":
-            base_parts.extend([
-                "",
-                "🔴 === BOTTOM REPLACEMENT CRITICAL OVERRIDE === 🔴",
-                "⚠️⚠️⚠️ BOTTOM LAYER IS COMPLETELY INACCESSIBLE WHILE UPPER LAYERS EXIST",
-                "⚠️⚠️⚠️ YOU MUST CLEAR EVERY SINGLE UPPER LAYER BEFORE TOUCHING BOTTOM",
-                "⚠️⚠️⚠️ NO EXCEPTIONS - NO SHORTCUTS - NO DIRECT ACCESS",
-                "",
-                "❌ ABSOLUTE PROHIBITIONS:",
-                "❌ NEVER access bottom while middle layer exists (even if middle is correct)",
-                "❌ NEVER access bottom while top layer exists (even if top is correct)",
-                "❌ NEVER skip clearing middle layer - it BLOCKS bottom access",
-                "❌ NEVER think 'middle is correct so I don't need to move it'",
-                "",
-                "✅ MANDATORY PHYSICS:",
-                "✅ Middle layer PHYSICALLY BLOCKS bottom access - must be cleared",
-                "✅ Top layer PHYSICALLY BLOCKS middle access - must be cleared first",
-                "✅ EXACT sequence: Clear top → Clear middle → Access bottom → Rebuild all",
-                "✅ ALL upper layers to buffer (for restoration), wrong bottom to scattered",
-                "",
-            ])
-        else:
-            base_parts.extend([
-                "",
-                "🔴 === OBJECT LIFECYCLE MANAGEMENT === 🔴",
-                "📦 BUFFER (Temporary Storage): Objects that EXIST in target but are currently misplaced",
-                "  - Use move_to_buffer → move_from_buffer pattern",
-                "  - These objects MUST be restored to correct positions",
-                "",
-                "🗑️ SCATTERED (Permanent Removal): Objects that DO NOT exist anywhere in target",
-                "  - Use move_to_position → scattered (no restoration)",
-                "  - These objects are permanently removed from stack",
-                "",
-            ])
-
-        # 根据替换类型添加特定指导
-        if replacement_type == "top_only":
-            specific_parts = [
-                "🔴 === TOP LAYER REPLACEMENT (SIMPLE) === 🔴",
-                "✅ SCENARIO: Only top layer needs correction - SIMPLEST case",
-                "✅ PATTERN: Remove-then-Place (exactly 2 steps)",
-                "✅ NO BLOCKING: Top layer is directly accessible",
-                "",
-                "🔴 REPLACEMENT SEQUENCE (MANDATORY ORDER):",
-                "  1. move_to_position: wrong_top_object → scattered (FIRST: remove current occupant)",
-                "  2. move_to_position: correct_top_object → top (SECOND: place target object)",
-                "",
-                "🔴 CRITICAL PHYSICAL CONSTRAINT:",
-                "❌ FORBIDDEN: Placing object on occupied position (position must be empty first)",
-                "✅ REQUIRED: ALWAYS clear position before placing new object",
-                "✅ REQUIRED: Two separate actions - NEVER combine remove+place",
-                "",
-                "🔴 CRITICAL RULES:",
-                "- Step 1 MUST clear the position (wrong object → scattered)",
-                "- Step 2 MUST place target object (correct object → position)",
-                "- NO buffer needed (wrong object goes to scattered permanently)",
-                "- NO skipping: even simple replacement needs both steps",
-                "",
-                "EXAMPLE - Current: yellow cube at top, Target: red cube at top:",
-                '  Step 1: move_to_position yellow cube from top → scattered (clear position)',
-                '  Step 2: move_to_position red cube from scattered → top (place target)',
-            ]
-        elif replacement_type == "middle_only":
-            specific_parts = [
-                "🔴 === MIDDLE LAYER REPLACEMENT (COMPLEX) === 🔴",
-                "⚠️ SCENARIO: Middle layer blocked by top layer",
-                "⚠️ PATTERN: Clear-Replace-Restore (4 steps)",
-                "⚠️ BLOCKING: Must clear top to access middle",
-                "",
-                "🔴 REPLACEMENT SEQUENCE:",
-                "  1. move_to_buffer: correct_top_object → B1 (clear blocking layer)",
-                "  2. move_to_position: wrong_middle_object → scattered (remove unwanted)",
-                "  3. move_to_position: correct_middle_object → middle (place target)",
-                "  4. move_from_buffer: correct_top_object → top (restore needed layer)",
-                "",
-                "🔴 PHYSICAL CONSTRAINTS:",
-                "- CANNOT access middle while top exists",
-                "- MUST clear top first (even if top is correct)",
-                "- MUST restore top after middle replacement",
-            ]
-        elif replacement_type == "bottom_only":
-            specific_parts = [
-                "🔴 === BOTTOM LAYER REPLACEMENT - MANDATORY 6-STEP SEQUENCE === 🔴",
-                "",
-                "⚠️⚠️⚠️ ABSOLUTE REQUIREMENT: EXACTLY 6 STEPS - NO SHORTCUTS ⚠️⚠️⚠️",
-                "",
-                "🔴 STEP-BY-STEP MANDATORY SEQUENCE:",
-                "",
-                "STEP 1: CLEAR TOP LAYER (MANDATORY - BLOCKS MIDDLE ACCESS)",
-                '{"step": 1, "action": "move_to_buffer", "object": "red cube", "from": {"type": "stack", "position": "top"}, "to": {"type": "buffer", "slot": "B1"}, "reason": "Clear top to access middle"}',
-                "",
-                "STEP 2: CLEAR MIDDLE LAYER (MANDATORY - BLOCKS BOTTOM ACCESS)",
-                '{"step": 2, "action": "move_to_buffer", "object": "green cube", "from": {"type": "stack", "position": "middle"}, "to": {"type": "buffer", "slot": "B2"}, "reason": "Clear middle to access bottom"}',
-                "",
-                "STEP 3: REMOVE WRONG BOTTOM (NOW ACCESSIBLE)",
-                '{"step": 3, "action": "move_to_position", "object": "yellow cube", "from": {"type": "stack", "position": "bottom"}, "to": {"type": "scattered"}, "reason": "Remove incorrect bottom object"}',
-                "",
-                "STEP 4: PLACE CORRECT BOTTOM (FOUNDATION)",
-                '{"step": 4, "action": "move_to_position", "object": "blue cube", "from": {"type": "scattered"}, "to": {"type": "stack", "position": "bottom"}, "reason": "Place correct bottom foundation"}',
-                "",
-                "STEP 5: RESTORE MIDDLE LAYER (REBUILD FROM BOTTOM UP)",
-                '{"step": 5, "action": "move_from_buffer", "object": "green cube", "from": {"type": "buffer", "slot": "B2"}, "to": {"type": "stack", "position": "middle"}, "reason": "Restore middle layer"}',
-                "",
-                "STEP 6: RESTORE TOP LAYER (COMPLETE STACK)",
-                '{"step": 6, "action": "move_from_buffer", "object": "red cube", "from": {"type": "buffer", "slot": "B1"}, "to": {"type": "stack", "position": "top"}, "reason": "Restore top layer"}',
-                "",
-                "🔴 CRITICAL VALIDATIONS:",
-                "❌ NEVER skip any step",
-                "❌ NEVER change the order",
-                "❌ NEVER access bottom directly (always clear above first)",
-                "❌ NEVER use non-existent actions like 'move_from_position'",
-                "✅ MUST follow exact 6-step sequence above",
-                "✅ MUST use proper action names: move_to_buffer, move_from_buffer, move_to_position",
-            ]
-        elif replacement_type == "extension":
-            specific_parts = [
-                "🔴 === STACK EXTENSION (SIMPLE) === 🔴",
-                "✅ SCENARIO: Adding layers to existing correct stack",
-                "✅ PATTERN: Direct placement (minimal actions)",
-                "✅ NO REPLACEMENT: Existing objects are correct",
-                "",
-                "🔴 EXTENSION LOGIC:",
-                "- Place new object at 'top' position",
-                "- Existing layers automatically adjust (no explicit moves needed)",
-                "- 2→3 layers: just place third object at top",
-            ]
-        elif replacement_type == "multiple":
-            specific_parts = [
-                "🔴 === MULTIPLE LAYER REPLACEMENT (COMPLEX REBUILD) === 🔴",
-                "⚠️⚠️⚠️ SCENARIO: Multiple layers need correction",
-                "⚠️⚠️⚠️ PATTERN: Strategic reconstruction",
-                "⚠️⚠️⚠️ APPROACH: Clear all, then rebuild bottom-up",
-            ]
-        else:  # none or unknown
-            specific_parts = [
-                "🔴 === GENERAL STACK OPERATION === 🔴",
-                "✅ SCENARIO: Standard stack arrangement",
-                "✅ FOLLOW: Bottom-up building principles",
-            ]
+        # 根据替换类型添加特定指导 - 优先从知识库获取
+        specific_parts = self._get_prompt_with_fallback(replacement_type)
 
         # 通用结束部分
         ending_parts = [
@@ -1072,6 +1000,71 @@ class ReplanRAGSystem:
         ]
 
         return base_parts + specific_parts + ending_parts
+
+    def _get_prompt_with_fallback(self, replacement_type: str) -> List[str]:
+        """从知识库获取提示词，支持降级到硬编码版本"""
+        try:
+            # 首先尝试从知识库获取
+            if replacement_type in self.prompt_templates:
+                kb_prompt = self.prompt_templates[replacement_type]
+                if isinstance(kb_prompt, list) and kb_prompt:
+                    print(f"[PROMPT] Using knowledge base template for {replacement_type} ({len(kb_prompt)} lines)")
+                    return kb_prompt
+                else:
+                    print(f"[WARNING] Knowledge base template for {replacement_type} is empty or invalid")
+        except Exception as e:
+            print(f"[ERROR] Failed to load KB prompt for {replacement_type}: {e}")
+
+        # 降级到硬编码版本
+        fallback_reason = "template not found" if replacement_type not in self.prompt_templates else "template invalid"
+        print(f"[FALLBACK] Using hardcoded prompt for {replacement_type} (reason: {fallback_reason})")
+
+        try:
+            hardcoded_prompt = self._get_hardcoded_prompt(replacement_type)
+            print(f"[FALLBACK] Hardcoded prompt loaded: {len(hardcoded_prompt)} lines")
+            return hardcoded_prompt
+        except Exception as e:
+            print(f"[CRITICAL] Hardcoded prompt also failed for {replacement_type}: {e}")
+            # 最后的保底
+            return [
+                "🔴 === EMERGENCY FALLBACK === 🔴",
+                f"✅ SCENARIO: {replacement_type} prompt system failure",
+                "✅ INSTRUCTION: Generate appropriate action plan based on physical constraints",
+                "✅ REQUIREMENT: Follow coordinate-free action format",
+            ]
+
+    def _get_hardcoded_prompt(self, replacement_type: str) -> List[str]:
+        """硬编码版本的提示词（降级选项）"""
+        if replacement_type == "top_only":
+            return [
+                "🔴 === TOP LAYER REPLACEMENT (SIMPLE) === 🔴",
+                "✅ SCENARIO: Only top layer needs correction - SIMPLEST case",
+                "✅ PATTERN: Remove-then-Place (exactly 2 steps)",
+                "✅ NO BLOCKING: Top layer is directly accessible",
+                "",
+                "🔴 REPLACEMENT SEQUENCE (MANDATORY ORDER):",
+                "  1. move_to_position: wrong_top_object → scattered (FIRST: remove current occupant)",
+                "  2. move_to_position: correct_top_object → top (SECOND: place target object)",
+            ]
+        elif replacement_type == "middle_only":
+            return [
+                "🔴 === MIDDLE LAYER REPLACEMENT (COMPLEX) === 🔴",
+                "⚠️ SCENARIO: Middle layer blocked by top layer",
+                "⚠️ PATTERN: Clear-Replace-Restore (4 steps)",
+                "⚠️ BLOCKING: Must clear top to access middle",
+                "",
+                "🔴 REPLACEMENT SEQUENCE:",
+                "  1. move_to_buffer: correct_top_object → B1 (clear blocking layer)",
+                "  2. move_to_position: wrong_middle_object → scattered (remove unwanted)",
+                "  3. move_to_position: correct_middle_object → middle (place target)",
+                "  4. move_from_buffer: correct_top_object → top (restore needed layer)",
+            ]
+        else:
+            return [
+                "🔴 === GENERAL STACK OPERATION === 🔴",
+                "✅ SCENARIO: Standard stack arrangement",
+                "✅ FOLLOW: Bottom-up building principles",
+            ]
 
     def retrieve_relevant_rules(self, query: str, top_k: int = TOP_K_RETRIEVAL) -> List[Dict[str, Any]]:
         """基于语义相似度检索相关规则"""
@@ -1568,25 +1561,26 @@ if __name__ == "__main__":
         }
     }
 
-    # current_state_stacked = {
-    #     "target_structure": {
-    #         "relationship": "stacked",
-    #         "placements": [
-    #             {"position": "bottom", "object 1": "blue cube"},
-    #         ]
-    #     }
-    # }
-
     current_state_stacked = {
         "target_structure": {
             "relationship": "stacked",
             "placements": [
-                {"position": "bottom", "object 1": "yellow cube"},
-                {"position": "middle", "object 2": "green cube"},
-                {"position": "top", "object 3": "red cube"}
+                {"position": "bottom", "object 1": "blue cube"},
+                {"position": "middle", "object 2": "green cube"}
             ]
         }
     }
+
+    # current_state_stacked = {
+    #     "target_structure": {
+    #         "relationship": "stacked",
+    #         "placements": [
+    #             {"position": "bottom", "object 1": "yellow cube"},
+    #             {"position": "middle", "object 2": "green cube"},
+    #             {"position": "top", "object 3": "red cube"}
+    #         ]
+    #     }
+    # }
 
 
     result_stacked = generate_replan(target_spec_stacked, current_state_stacked)
