@@ -7,6 +7,8 @@ Replan RAG System - 基于真正的RAG实现的立方体重新规划器
 - 自然语言理解：理解replan任务的current state和target spec
 - 动态组合：根据查询场景动态组合相关规则
 - 验证机制：确保生成的计划符合replan约束
+
+111
 """
 
 import json
@@ -280,13 +282,34 @@ class ReplanRAGSystem:
                     query_parts.append(f"missing stack positions {' '.join(missing)}")
                 else:
                     mismatches = []
+                    mismatch_details = []
                     for pos in expected_positions:
                         target_obj = target_map.get(pos)
                         current_obj = current_map.get(pos)
                         if target_obj and current_obj and target_obj != current_obj:
                             mismatches.append(f"{pos} wrong object")
+                            mismatch_details.append(f"{pos} has {current_obj} needs {target_obj}")
+
                     if mismatches:
                         query_parts.extend(mismatches)
+                        query_parts.extend(mismatch_details)
+
+                        # 强调替换场景特征
+                        if "middle" in [pos for pos in expected_positions if target_map.get(pos) != current_map.get(pos)]:
+                            query_parts.append("middle layer replacement physical access constraint")
+                            query_parts.append("clear top to access middle blocked position")
+                        if "bottom" in [pos for pos in expected_positions if target_map.get(pos) != current_map.get(pos)]:
+                            query_parts.append("bottom layer replacement clear entire stack")
+
+                        # 强调对象生命周期
+                        wrong_objects = [current_map.get(pos) for pos in expected_positions
+                                       if current_map.get(pos) and target_map.get(pos)
+                                       and current_map.get(pos) != target_map.get(pos)]
+                        target_objects = [target_map.get(pos) for pos in expected_positions if target_map.get(pos)]
+
+                        for wrong_obj in wrong_objects:
+                            if wrong_obj not in target_objects:
+                                query_parts.append(f"{wrong_obj} not in target permanent removal")
                     else:
                         query_parts.append("correct stack arrangement")
             else:
@@ -335,14 +358,45 @@ class ReplanRAGSystem:
 
         query = " ".join(filter(None, query_parts)) + " object reordering planning"
 
-        # 预定义的场景模板
+        # 预定义的场景模板 - 按复杂度分层
         templates = {
+            "stack_replacement_top": [
+                "top layer wrong object replacement",
+                "incorrect top object simple replacement",
+                "wrong object at top position direct access",
+                "top layer object mismatch direct replacement",
+                "replace top object no blocking layers",
+                "simple top layer correction"
+            ],
+            "stack_replacement_middle": [
+                "middle layer wrong object replacement",
+                "incorrect middle object blocked access",
+                "wrong object at middle position clear above first",
+                "middle layer object mismatch physical constraint",
+                "replace middle object clear top first",
+                "blocked middle layer access constraint"
+            ],
+            "stack_replacement_bottom": [
+                "bottom layer wrong object replacement",
+                "incorrect bottom object clear entire stack",
+                "wrong object at bottom position full reconstruction",
+                "bottom layer object mismatch clear all above",
+                "replace bottom object clear entire stack",
+                "foundation layer replacement complete rebuild"
+            ],
+            "stack_replacement_multiple": [
+                "multiple layers wrong objects replacement",
+                "complex multi-position object correction",
+                "several wrong objects stack reconstruction",
+                "multiple layer mismatch complete rebuild"
+            ],
             "stacked_building": [
                 "stacked arrangement vertical tower building",
                 "all objects scattered need stacking bottom up",
                 "partial stack need completion",
                 "different relationship need stacking",
-                "bottom middle top stacking sequence"
+                "bottom middle top stacking sequence",
+                "stack extension add new layer"
             ],
             "separated_arrangement": [
                 "separated_left_right arrangement horizontal separation",
@@ -376,6 +430,20 @@ class ReplanRAGSystem:
             ]
         }
 
+        # 分析替换复杂度以增强查询描述
+        replacement_type = self._analyze_replacement_complexity(target_spec, current_state)
+        if replacement_type != "none":
+            if replacement_type == "top_only":
+                query += " top layer simple replacement direct access"
+            elif replacement_type == "middle_only":
+                query += " middle layer blocked replacement clear above first"
+            elif replacement_type == "bottom_only":
+                query += " bottom layer complex replacement clear entire stack"
+            elif replacement_type == "extension":
+                query += " stack extension add new layer"
+            elif replacement_type == "multiple":
+                query += " multiple layer replacement complex rebuild"
+
         # 对查询进行embedding
         query_embedding = self.embedding_model.encode([query])
 
@@ -392,7 +460,18 @@ class ReplanRAGSystem:
                 max_similarity = max_sim_for_scenario
                 best_scenario = scenario
 
-        print(f"[SCENARIO] Classified as '{best_scenario}' (similarity: {max_similarity:.3f})")
+        # 如果是替换场景但相似度不高，强制使用相应的替换分类
+        if replacement_type != "none" and max_similarity < 0.7:
+            if replacement_type == "top_only":
+                best_scenario = "stack_replacement_top"
+            elif replacement_type == "middle_only":
+                best_scenario = "stack_replacement_middle"
+            elif replacement_type == "bottom_only":
+                best_scenario = "stack_replacement_bottom"
+            elif replacement_type == "multiple":
+                best_scenario = "stack_replacement_multiple"
+
+        print(f"[SCENARIO] Classified as '{best_scenario}' (similarity: {max_similarity:.3f}, replacement_type: {replacement_type})")
         return best_scenario
 
     def retrieve_and_filter_rules(self, target_spec: Dict[str, Any], current_state: Dict[str, Any], top_k: int = TOP_K_RETRIEVAL) -> List[Dict[str, Any]]:
@@ -566,6 +645,12 @@ class ReplanRAGSystem:
 
         # Inject stack replacement rules if replacement scenario detected
         if self._detect_stack_replacement_scenario(target_spec, current_state):
+            mismatches = self._get_stack_mismatch_positions(target_spec, current_state)
+            # Put position-specific docs first to increase salience
+            if "middle" in mismatches:
+                enforced_keywords.insert(0, 'pattern_rules/stack_replacement_middle.md')
+            if "bottom" in mismatches:
+                enforced_keywords.insert(0, 'pattern_rules/stack_replacement_bottom.md')
             enforced_keywords.append('pattern_rules/stack_replacement.md')
 
         relationship_keyword = None
@@ -722,6 +807,227 @@ class ReplanRAGSystem:
                 return rule.copy()
         return None
 
+    def _analyze_replacement_complexity(self, target_spec: Dict[str, Any], current_state: Dict[str, Any]) -> str:
+        """
+        分析替换复杂度，返回具体的替换类型：
+        - top_only: 仅顶层需要替换（最简单）
+        - middle_only: 仅中层需要替换（中等复杂）
+        - bottom_only: 仅底层需要替换（最复杂）
+        - multiple: 多层需要替换（复杂重建）
+        - extension: 堆栈扩展（简单添加）
+        - none: 无需替换
+        """
+        target_structure = target_spec.get("target_structure", {})
+        current_structure = current_state.get("target_structure", {})
+
+        if not isinstance(target_structure, dict) or not isinstance(current_structure, dict):
+            return "none"
+
+        target_rel = target_structure.get("relationship")
+        current_rel = current_structure.get("relationship")
+
+        # 只处理堆栈相关关系
+        stacking_relationships = {
+            "stacked_left", "stacked_middle", "stacked_right",
+            "stacked", "stacked_and_separated_left", "stacked_and_separated_right"
+        }
+
+        if target_rel not in stacking_relationships:
+            return "none"
+
+        t_map = build_position_object_map(target_structure.get("placements", []))
+        c_map = build_position_object_map(current_structure.get("placements", []))
+
+        # 检测扩展场景（层数增加）
+        if current_rel in stacking_relationships and len(c_map) < len(t_map):
+            # 检查现有层是否正确
+            mismatches = []
+            for pos in c_map:
+                if pos in t_map and t_map[pos] != c_map[pos]:
+                    mismatches.append(pos)
+            if not mismatches:
+                return "extension"
+
+        # 检测替换场景
+        mismatches = []
+        for pos in ("bottom", "middle", "top"):
+            t_obj = t_map.get(pos)
+            c_obj = c_map.get(pos)
+            if t_obj and c_obj and t_obj != c_obj:
+                mismatches.append(pos)
+
+        if not mismatches:
+            return "none"
+        elif len(mismatches) == 1:
+            return f"{mismatches[0]}_only"
+        else:
+            return "multiple"
+
+    def _get_stack_mismatch_positions(self, target_spec: Dict[str, Any], current_state: Dict[str, Any]) -> List[str]:
+        """Return stack positions where target and current differ (both defined)."""
+        target_structure = target_spec.get("target_structure", {})
+        current_structure = current_state.get("target_structure", {})
+
+        if not isinstance(target_structure, dict) or not isinstance(current_structure, dict):
+            return []
+
+        if target_structure.get("relationship") != "stacked" or current_structure.get("relationship") != "stacked":
+            return []
+
+        t_map = build_position_object_map(target_structure.get("placements", []))
+        c_map = build_position_object_map(current_structure.get("placements", []))
+
+        mismatches: List[str] = []
+        for pos in ("bottom", "middle", "top"):
+            t_obj = t_map.get(pos)
+            c_obj = c_map.get(pos)
+            if t_obj and c_obj and t_obj != c_obj:
+                mismatches.append(pos)
+        return mismatches
+
+    def _build_stacked_system_prompt(self, replacement_type: str, target_spec: Dict[str, Any] = None, current_state: Dict[str, Any] = None) -> List[str]:
+        """
+        根据替换类型构建分层的系统提示词
+        支持未来扩展到其他目标形态
+
+        Args:
+            replacement_type: 替换类型 (top_only, middle_only, bottom_only, etc.)
+            target_spec: 目标规范 (未来扩展用)
+            current_state: 当前状态 (未来扩展用)
+        """
+        # 基础通用提示词（所有堆栈任务共享）
+        base_parts = [
+            "/no_think",
+            "",
+            "You are a precise object reordering planner with access to relevant rules.",
+            "",
+            "🔴 MANDATORY: Output ONLY strict JSON with no additional text, explanations, or <think> tags.",
+            "🔴 CRITICAL: Each action MUST have 'object' field at TOP LEVEL (not inside from/to).",
+            "🔴 CRITICAL: Use pure object names (e.g., 'blue cube') without descriptive prefixes.",
+            "🔴 CRITICAL: Use correct key names: from/to must use 'type' not 'position' for scattered objects.",
+            "",
+            "🔴 === FUNDAMENTAL PHYSICAL CONSTRAINTS === 🔴",
+            "❌ ABSOLUTE PROHIBITION: NEVER place object on occupied position",
+            "❌ ABSOLUTE PROHIBITION: Position must be completely EMPTY before placing new object",
+            "✅ MANDATORY SEQUENCE: Remove existing object FIRST, then place new object SECOND",
+            "✅ ALWAYS use separate actions: one to clear, one to place",
+            "",
+            "🔴 === OBJECT LIFECYCLE MANAGEMENT === 🔴",
+            "📦 BUFFER (Temporary Storage): Objects that EXIST in target but are currently misplaced",
+            "  - Use move_to_buffer → move_from_buffer pattern",
+            "  - These objects MUST be restored to correct positions",
+            "",
+            "🗑️ SCATTERED (Permanent Removal): Objects that DO NOT exist anywhere in target",
+            "  - Use move_to_position → scattered (no restoration)",
+            "  - These objects are permanently removed from stack",
+            "",
+        ]
+
+        # 根据替换类型添加特定指导
+        if replacement_type == "top_only":
+            specific_parts = [
+                "🔴 === TOP LAYER REPLACEMENT (SIMPLE) === 🔴",
+                "✅ SCENARIO: Only top layer needs correction - SIMPLEST case",
+                "✅ PATTERN: Remove-then-Place (exactly 2 steps)",
+                "✅ NO BLOCKING: Top layer is directly accessible",
+                "",
+                "🔴 REPLACEMENT SEQUENCE (MANDATORY ORDER):",
+                "  1. move_to_position: wrong_top_object → scattered (FIRST: remove current occupant)",
+                "  2. move_to_position: correct_top_object → top (SECOND: place target object)",
+                "",
+                "🔴 CRITICAL PHYSICAL CONSTRAINT:",
+                "❌ FORBIDDEN: Placing object on occupied position (position must be empty first)",
+                "✅ REQUIRED: ALWAYS clear position before placing new object",
+                "✅ REQUIRED: Two separate actions - NEVER combine remove+place",
+                "",
+                "🔴 CRITICAL RULES:",
+                "- Step 1 MUST clear the position (wrong object → scattered)",
+                "- Step 2 MUST place target object (correct object → position)",
+                "- NO buffer needed (wrong object goes to scattered permanently)",
+                "- NO skipping: even simple replacement needs both steps",
+                "",
+                "EXAMPLE - Current: yellow cube at top, Target: red cube at top:",
+                '  Step 1: move_to_position yellow cube from top → scattered (clear position)',
+                '  Step 2: move_to_position red cube from scattered → top (place target)',
+            ]
+        elif replacement_type == "middle_only":
+            specific_parts = [
+                "🔴 === MIDDLE LAYER REPLACEMENT (COMPLEX) === 🔴",
+                "⚠️ SCENARIO: Middle layer blocked by top layer",
+                "⚠️ PATTERN: Clear-Replace-Restore (4 steps)",
+                "⚠️ BLOCKING: Must clear top to access middle",
+                "",
+                "🔴 REPLACEMENT SEQUENCE:",
+                "  1. move_to_buffer: correct_top_object → B1 (clear blocking layer)",
+                "  2. move_to_position: wrong_middle_object → scattered (remove unwanted)",
+                "  3. move_to_position: correct_middle_object → middle (place target)",
+                "  4. move_from_buffer: correct_top_object → top (restore needed layer)",
+                "",
+                "🔴 PHYSICAL CONSTRAINTS:",
+                "- CANNOT access middle while top exists",
+                "- MUST clear top first (even if top is correct)",
+                "- MUST restore top after middle replacement",
+            ]
+        elif replacement_type == "bottom_only":
+            specific_parts = [
+                "🔴 === BOTTOM LAYER REPLACEMENT (MOST COMPLEX) === 🔴",
+                "⚠️⚠️ SCENARIO: Bottom layer blocked by all upper layers",
+                "⚠️⚠️ PATTERN: Full Stack Rebuild (6+ steps)",
+                "⚠️⚠️ BLOCKING: Must clear entire stack to access bottom",
+                "",
+                "🔴 REPLACEMENT SEQUENCE:",
+                "  1. move_to_buffer: correct_top_object → B1 (clear top)",
+                "  2. move_to_buffer: correct_middle_object → B2 (clear middle)",
+                "  3. move_to_position: wrong_bottom_object → scattered (remove)",
+                "  4. move_to_position: correct_bottom_object → bottom (foundation)",
+                "  5. move_from_buffer: correct_middle_object → middle (rebuild)",
+                "  6. move_from_buffer: correct_top_object → top (complete)",
+            ]
+        elif replacement_type == "extension":
+            specific_parts = [
+                "🔴 === STACK EXTENSION (SIMPLE) === 🔴",
+                "✅ SCENARIO: Adding layers to existing correct stack",
+                "✅ PATTERN: Direct placement (minimal actions)",
+                "✅ NO REPLACEMENT: Existing objects are correct",
+                "",
+                "🔴 EXTENSION LOGIC:",
+                "- Place new object at 'top' position",
+                "- Existing layers automatically adjust (no explicit moves needed)",
+                "- 2→3 layers: just place third object at top",
+            ]
+        elif replacement_type == "multiple":
+            specific_parts = [
+                "🔴 === MULTIPLE LAYER REPLACEMENT (COMPLEX REBUILD) === 🔴",
+                "⚠️⚠️⚠️ SCENARIO: Multiple layers need correction",
+                "⚠️⚠️⚠️ PATTERN: Strategic reconstruction",
+                "⚠️⚠️⚠️ APPROACH: Clear all, then rebuild bottom-up",
+            ]
+        else:  # none or unknown
+            specific_parts = [
+                "🔴 === GENERAL STACK OPERATION === 🔴",
+                "✅ SCENARIO: Standard stack arrangement",
+                "✅ FOLLOW: Bottom-up building principles",
+            ]
+
+        # 通用结束部分
+        ending_parts = [
+            "",
+            "TASK: Generate action plan for stacked arrangement with coordinate-free actions.",
+            "",
+            "🔴 MANDATORY ACTION FORMAT:",
+            "- Every action MUST have: step, action, object, from, to, reason",
+            "- 'object' field MUST be at top level, NOT inside from/to",
+            "- Use 'type': 'scattered' NOT 'position': 'scattered'",
+            "- Use specific action names: move_to_position, move_to_buffer, move_from_buffer",
+            "",
+            "OUTPUT TEMPLATE:",
+            '{"status": "success", "plan": [{"step": 1, "action": "move_to_position", "object": "blue cube", "from": {"type": "scattered"}, "to": {"type": "stack", "position": "bottom"}, "reason": "Place at position"}], "final_expected": {"target_structure": {"relationship": "stacked", "placements": [{"position": "bottom", "object 1": "blue cube"}, {"position": "middle", "object 2": "green cube"}, {"position": "top", "object 3": "red cube"}]}}}',
+            "",
+            "/no_think",
+        ]
+
+        return base_parts + specific_parts + ending_parts
+
     def retrieve_relevant_rules(self, query: str, top_k: int = TOP_K_RETRIEVAL) -> List[Dict[str, Any]]:
         """基于语义相似度检索相关规则"""
         if not self.knowledge_base or self.rule_embeddings is None:
@@ -763,43 +1069,9 @@ class ReplanRAGSystem:
         if target_relationship:
             # 新格式：关系型输出
             if target_relationship == "stacked":
-                system_parts = [
-                    "/no_think",
-                    "",
-                    "You are a precise object reordering planner with access to relevant rules.",
-                    "",
-                    "🔴 MANDATORY: Output ONLY strict JSON with no additional text, explanations, or <think> tags.",
-                    "🔴 CRITICAL: Each action MUST have 'object' field at TOP LEVEL (not inside from/to).",
-                    "🔴 CRITICAL: Use pure object names (e.g., 'blue cube') without descriptive prefixes.",
-                    "🔴 CRITICAL: Use correct key names: from/to must use 'type' not 'position' for scattered objects.",
-                    "🔴 REQUIRED: Follow bottom-up building order and use buffer slots B1/B2/B3 when needed.",
-                    "🔴 BUFFER: Use predefined buffer slots B1, B2, B3 for temporary storage (coordinates handled internally).",
-                    "🔴 FINAL EXPECTED: Success outputs MUST include final_expected.target_structure matching target_spec.",
-                    "🔴 STACKING EXTENSION: When extending stack height (e.g., 2→3 layers), place new object on 'top' - existing layers naturally adjust.",
-                    "🔴 NO OVERWRITE: Only clear existing objects to buffer when they are WRONG objects, not when extending stack height.",
-                    "🔴 EXTENSION vs REPLACEMENT: Extension = adding layers above correct objects. Replacement = fixing wrong objects.",
-                    "🔴 STACK REPLACEMENT RULES:",
-                    "  - PHYSICAL CONSTRAINT: Cannot access middle/bottom when upper layers exist",
-                    "  - CLEAR SEQUENCE: Before replacing middle/bottom, MUST first clear all above layers to buffer",
-                    "  - NEVER directly place object on occupied position (forbidden: move_to_position to occupied slot)",
-                    "  - OBJECT LIFECYCLE: Objects NOT in target → scattered (permanent), Objects in target → buffer (temporary)",
-                    "  - FORBIDDEN: Restoring unwanted objects from buffer back to stack",
-                    "  - Example correct sequence: red→buffer(temp), yellow→scattered(remove), green→middle, red→top",
-                    "",
-                    "TASK: Generate action plan for stacked arrangement with coordinate-free actions.",
-                    "",
-                    "🔴 MANDATORY ACTION FORMAT:",
-                    "- Every action MUST have: step, action, object, from, to, reason",
-                    "- 'object' field MUST be at top level, NOT inside from/to",
-                    "- Use 'type': 'scattered' NOT 'position': 'scattered'",
-                    "- Use specific action names: move_to_position, move_to_buffer, move_from_buffer",
-                    "- Only address layers that need changes; correctly positioned layers automatically adjust during extension",
-                    "",
-                    "OUTPUT TEMPLATE:",
-                    '{"status": "success", "plan": [{"step": 1, "action": "move_to_position", "object": "blue cube", "from": {"type": "scattered"}, "to": {"type": "stack", "position": "bottom"}, "reason": "Place object at bottom"}], "final_expected": {"target_structure": {"relationship": "stacked", "placements": [{"position": "bottom", "object 1": "blue cube"}, {"position": "middle", "object 2": "green cube"}, {"position": "top", "object 3": "red cube"}]}}}',
-                    "",
-                    "/no_think",
-                ]
+                # 分析替换复杂度以选择合适的提示词
+                replacement_type = self._analyze_replacement_complexity(target_spec, current_state)
+                system_parts = self._build_stacked_system_prompt(replacement_type, target_spec, current_state)
             elif target_relationship in ["separated_left_right", "separated_front_back"]:
                 system_parts = [
                     "/no_think",
@@ -863,11 +1135,36 @@ class ReplanRAGSystem:
                 "/no_think",
             ]
 
-        # 添加检索到的规则内容
-        for i, rule in enumerate(relevant_rules):
-            system_parts.append(f"--- Retrieved Rule {i+1} ---")
-            system_parts.append(rule['rule_content'])
-            system_parts.append("")
+        # 按优先级重新排序规则：物理约束规则优先
+        priority_rules = []
+        other_rules = []
+
+        for rule in relevant_rules:
+            file_path = rule['file_path']
+            # 高优先级：物理约束和替换相关规则
+            if any(keyword in file_path for keyword in [
+                'stack_replacement', 'stacking_extension', 'physical_constraint',
+                'coordinate_free_actions', 'execution_order'
+            ]):
+                priority_rules.append(rule)
+            else:
+                other_rules.append(rule)
+
+        # 首先添加高优先级规则
+        if priority_rules:
+            system_parts.append("🔴 === CRITICAL PHYSICAL CONSTRAINT RULES === 🔴")
+            for i, rule in enumerate(priority_rules):
+                system_parts.append(f"--- PRIORITY Rule {i+1}: {rule.get('title', 'Physical Constraint Rule')} ---")
+                system_parts.append(rule['rule_content'])
+                system_parts.append("")
+
+        # 然后添加其他规则
+        if other_rules:
+            system_parts.append("--- Additional Supporting Rules ---")
+            for i, rule in enumerate(other_rules):
+                system_parts.append(f"--- Rule {i+1}: {rule.get('title', 'Supporting Rule')} ---")
+                system_parts.append(rule['rule_content'])
+                system_parts.append("")
 
         system_prompt = "\n".join(system_parts)
 
@@ -1226,26 +1523,25 @@ if __name__ == "__main__":
         }
     }
 
-    # current_state_stacked = {
-    #     "target_structure": {
-    #         "relationship": "stacked",
-    #         "placements": [
-    #             {"position": "bottom", "object 1": "blue cube"},
-    #             {"position": "middle", "object 2": "green cube"},
-    #         ]
-    #     }
-    # }
-
     current_state_stacked = {
         "target_structure": {
             "relationship": "stacked",
             "placements": [
                 {"position": "bottom", "object 1": "blue cube"},
-                {"position": "middle", "object 2": "yellow cube"},
-                {"position": "top", "object 3": "red cube"}
             ]
         }
     }
+
+    # current_state_stacked = {
+    #     "target_structure": {
+    #         "relationship": "stacked",
+    #         "placements": [
+    #             {"position": "bottom", "object 1": "blue cube"},
+    #             {"position": "middle", "object 2": "yellow cube"},
+    #             {"position": "top", "object 3": "red cube"}
+    #         ]
+    #     }
+    # }
 
 
     result_stacked = generate_replan(target_spec_stacked, current_state_stacked)
@@ -1265,5 +1561,3 @@ if __name__ == "__main__":
     # }
 
     # result_stacked_2 = generate_replan(target_spec_stacked, current_state_stacked_2)
-
-

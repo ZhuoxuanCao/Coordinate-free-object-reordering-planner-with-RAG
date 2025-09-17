@@ -2,7 +2,7 @@
 
 **Query Intent**: stack object replacement, wrong object correction, clear-before-place operations, position-specific replacement
 
-**CRITICAL COMPLIANCE**: When replacing objects in existing stack positions, ALWAYS clear above layers first, then place correct object, then restore cleared layers. NEVER directly place object on occupied position.
+**CRITICAL COMPLIANCE**: When replacing objects in existing stack positions, ALWAYS clear upper layers first (top→down), then place the correct object, then restore only the objects that still appear in target structure. NEVER directly place an object on an occupied position.
 
 ## PHYSICAL ACCESS RULES
 
@@ -109,7 +109,7 @@ When middle object is wrong (most common case):
 - Step 1: Clear blocking layer (red cube → buffer for restoration)
 - Step 2: Remove unwanted object (yellow cube → scattered, NOT buffer)
 - Step 3: Place target object (green cube → middle position)
-- Step 4: Restore preserved object (red cube → top position)
+- Step 4: Restore only objects required in target (red cube → top position). Objects removed in Step 2 must NOT return to stack.
 
 ### Pattern C - Bottom Position Replacement
 When bottom object is wrong (most complex case):
@@ -272,6 +272,7 @@ When bottom object is wrong (most complex case):
 - ❌ Buffering objects for removal: `move_to_buffer yellow cube` when yellow not in target
 - ❌ Restoring unwanted objects: `move_from_buffer yellow cube to stack` when yellow not needed
 - ❌ Using scattered for temporary storage: should use buffer for objects that need restoration
+- ❌ Skipping upper-layer clearance: attempting to move middle/bottom while top still in place
 
 ### **Common Error Examples**
 ```json
