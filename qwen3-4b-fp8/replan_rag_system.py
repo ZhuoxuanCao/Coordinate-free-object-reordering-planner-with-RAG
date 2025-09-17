@@ -911,17 +911,33 @@ class ReplanRAGSystem:
             "❌ ABSOLUTE PROHIBITION: Position must be completely EMPTY before placing new object",
             "✅ MANDATORY SEQUENCE: Remove existing object FIRST, then place new object SECOND",
             "✅ ALWAYS use separate actions: one to clear, one to place",
-            "",
-            "🔴 === OBJECT LIFECYCLE MANAGEMENT === 🔴",
-            "📦 BUFFER (Temporary Storage): Objects that EXIST in target but are currently misplaced",
-            "  - Use move_to_buffer → move_from_buffer pattern",
-            "  - These objects MUST be restored to correct positions",
-            "",
-            "🗑️ SCATTERED (Permanent Removal): Objects that DO NOT exist anywhere in target",
-            "  - Use move_to_position → scattered (no restoration)",
-            "  - These objects are permanently removed from stack",
-            "",
         ]
+
+        # 根据替换类型添加特定的基础约束
+        if replacement_type == "bottom_only":
+            base_parts.extend([
+                "",
+                "🔴 === BOTTOM REPLACEMENT CRITICAL OVERRIDE === 🔴",
+                "⚠️⚠️⚠️ BOTTOM LAYER IS COMPLETELY INACCESSIBLE WHILE UPPER LAYERS EXIST",
+                "⚠️⚠️⚠️ YOU MUST CLEAR EVERY SINGLE UPPER LAYER BEFORE TOUCHING BOTTOM",
+                "⚠️⚠️⚠️ NO EXCEPTIONS - NO SHORTCUTS - NO DIRECT ACCESS",
+                "❌ FORBIDDEN: Any action targeting bottom position while stack has >1 layer",
+                "✅ REQUIRED: Clear top → Clear middle → Access bottom → Rebuild",
+                "",
+            ])
+        else:
+            base_parts.extend([
+                "",
+                "🔴 === OBJECT LIFECYCLE MANAGEMENT === 🔴",
+                "📦 BUFFER (Temporary Storage): Objects that EXIST in target but are currently misplaced",
+                "  - Use move_to_buffer → move_from_buffer pattern",
+                "  - These objects MUST be restored to correct positions",
+                "",
+                "🗑️ SCATTERED (Permanent Removal): Objects that DO NOT exist anywhere in target",
+                "  - Use move_to_position → scattered (no restoration)",
+                "  - These objects are permanently removed from stack",
+                "",
+            ])
 
         # 根据替换类型添加特定指导
         if replacement_type == "top_only":
@@ -971,17 +987,40 @@ class ReplanRAGSystem:
         elif replacement_type == "bottom_only":
             specific_parts = [
                 "🔴 === BOTTOM LAYER REPLACEMENT (MOST COMPLEX) === 🔴",
-                "⚠️⚠️ SCENARIO: Bottom layer blocked by all upper layers",
-                "⚠️⚠️ PATTERN: Full Stack Rebuild (6+ steps)",
-                "⚠️⚠️ BLOCKING: Must clear entire stack to access bottom",
+                "⚠️⚠️ SCENARIO: Bottom layer completely blocked by ALL upper layers",
+                "⚠️⚠️ PATTERN: Complete Stack Deconstruction and Reconstruction (exactly 6 steps)",
+                "⚠️⚠️ BLOCKING: IMPOSSIBLE to access bottom while ANY upper layer exists",
                 "",
-                "🔴 REPLACEMENT SEQUENCE:",
-                "  1. move_to_buffer: correct_top_object → B1 (clear top)",
-                "  2. move_to_buffer: correct_middle_object → B2 (clear middle)",
-                "  3. move_to_position: wrong_bottom_object → scattered (remove)",
-                "  4. move_to_position: correct_bottom_object → bottom (foundation)",
-                "  5. move_from_buffer: correct_middle_object → middle (rebuild)",
-                "  6. move_from_buffer: correct_top_object → top (complete)",
+                "🔴 MANDATORY SEQUENCE (NEVER SKIP OR REORDER):",
+                "  1. move_to_buffer: top_object → B1 (FIRST: clear topmost layer)",
+                "  2. move_to_buffer: middle_object → B2 (SECOND: clear middle layer)",
+                "  3. move_to_position: wrong_bottom_object → scattered (THIRD: remove wrong foundation)",
+                "  4. move_to_position: correct_bottom_object → bottom (FOURTH: place correct foundation)",
+                "  5. move_from_buffer: middle_object → middle (FIFTH: restore middle layer)",
+                "  6. move_from_buffer: top_object → top (SIXTH: restore top layer)",
+                "",
+                "🔴 CRITICAL PHYSICAL CONSTRAINTS:",
+                "❌ FORBIDDEN: Accessing bottom while upper layers exist",
+                "❌ FORBIDDEN: Placing new object before clearing wrong object",
+                "❌ FORBIDDEN: Skipping any step or changing order",
+                "✅ REQUIRED: Clear TOP first, then MIDDLE, then access BOTTOM",
+                "✅ REQUIRED: Use separate buffer slots (B1 for top, B2 for middle)",
+                "✅ REQUIRED: Rebuild in reverse order (bottom → middle → top)",
+                "",
+                "🔴 ACTION VALIDATION:",
+                "- Use ONLY: move_to_buffer, move_from_buffer, move_to_position",
+                "- NEVER use: move_from_position (does not exist)",
+                "- Steps 1-2: Buffer correct objects (they exist in target)",
+                "- Step 3: Scattered wrong object (does not exist in target)",
+                "- Steps 4-6: Systematic reconstruction",
+                "",
+                "EXAMPLE - Current: yellow(bottom), green(middle), red(top) → Target: blue(bottom), green(middle), red(top):",
+                '  Step 1: move_to_buffer red cube from top → B1',
+                '  Step 2: move_to_buffer green cube from middle → B2',
+                '  Step 3: move_to_position yellow cube from bottom → scattered',
+                '  Step 4: move_to_position blue cube from scattered → bottom',
+                '  Step 5: move_from_buffer green cube from B2 → middle',
+                '  Step 6: move_from_buffer red cube from B1 → top',
             ]
         elif replacement_type == "extension":
             specific_parts = [
@@ -1523,25 +1562,25 @@ if __name__ == "__main__":
         }
     }
 
-    current_state_stacked = {
-        "target_structure": {
-            "relationship": "stacked",
-            "placements": [
-                {"position": "bottom", "object 1": "blue cube"},
-            ]
-        }
-    }
-
     # current_state_stacked = {
     #     "target_structure": {
     #         "relationship": "stacked",
     #         "placements": [
     #             {"position": "bottom", "object 1": "blue cube"},
-    #             {"position": "middle", "object 2": "yellow cube"},
-    #             {"position": "top", "object 3": "red cube"}
     #         ]
     #     }
     # }
+
+    current_state_stacked = {
+        "target_structure": {
+            "relationship": "stacked",
+            "placements": [
+                {"position": "bottom", "object 1": "yellow cube"},
+                {"position": "middle", "object 2": "green cube"},
+                {"position": "top", "object 3": "red cube"}
+            ]
+        }
+    }
 
 
     result_stacked = generate_replan(target_spec_stacked, current_state_stacked)
