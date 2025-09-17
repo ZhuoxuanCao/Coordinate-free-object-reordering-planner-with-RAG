@@ -564,6 +564,10 @@ class ReplanRAGSystem:
             enforced_keywords.append('core_rules/stacking_extension.md')
             enforced_keywords.append('scenario_rules/stacking_extension_examples.md')
 
+        # Inject stack replacement rules if replacement scenario detected
+        if self._detect_stack_replacement_scenario(target_spec, current_state):
+            enforced_keywords.append('pattern_rules/stack_replacement.md')
+
         relationship_keyword = None
         if target_relationship:
             if target_relationship in {"stacked_left", "stacked_middle", "stacked_right"}:
@@ -671,6 +675,46 @@ class ReplanRAGSystem:
 
         return rule
 
+    def _detect_stack_replacement_scenario(self, target_spec: Dict[str, Any], current_state: Dict[str, Any]) -> bool:
+        """
+        检测是否存在堆栈替换场景：
+        - 当前位置有错误对象需要替换
+        - 目标结构中同一位置需要不同对象
+        """
+        target_structure = target_spec.get("target_structure", {})
+        current_structure = current_state.get("target_structure", {})
+
+        target_rel = target_structure.get("relationship")
+        current_rel = current_structure.get("relationship")
+
+        # 只检测堆栈相关的关系
+        stacking_relationships = {
+            "stacked_left", "stacked_middle", "stacked_right",
+            "stacked", "stacked_and_separated_left", "stacked_and_separated_right"
+        }
+
+        if target_rel not in stacking_relationships:
+            return False
+
+        # 如果当前状态也是堆栈关系，检查是否有位置对象不匹配
+        if current_rel in stacking_relationships:
+            target_placements = target_structure.get("placements", [])
+            current_placements = current_structure.get("placements", [])
+
+            target_map = build_position_object_map(target_placements)
+            current_map = build_position_object_map(current_placements)
+
+            # 检查是否有相同位置但不同对象的情况（替换场景）
+            for position in ["bottom", "middle", "top"]:
+                target_obj = target_map.get(position)
+                current_obj = current_map.get(position)
+
+                # 如果目标和当前都有这个位置，但对象不同，则是替换场景
+                if target_obj and current_obj and target_obj != current_obj:
+                    return True
+
+        return False
+
     def _get_rule_by_keyword(self, keyword: str) -> Dict[str, Any]:
         """根据文件路径关键字获取规则副本。"""
         for path, rule in self._rule_lookup.items():
@@ -734,6 +778,13 @@ class ReplanRAGSystem:
                     "🔴 STACKING EXTENSION: When extending stack height (e.g., 2→3 layers), place new object on 'top' - existing layers naturally adjust.",
                     "🔴 NO OVERWRITE: Only clear existing objects to buffer when they are WRONG objects, not when extending stack height.",
                     "🔴 EXTENSION vs REPLACEMENT: Extension = adding layers above correct objects. Replacement = fixing wrong objects.",
+                    "🔴 STACK REPLACEMENT RULES:",
+                    "  - PHYSICAL CONSTRAINT: Cannot access middle/bottom when upper layers exist",
+                    "  - CLEAR SEQUENCE: Before replacing middle/bottom, MUST first clear all above layers to buffer",
+                    "  - NEVER directly place object on occupied position (forbidden: move_to_position to occupied slot)",
+                    "  - OBJECT LIFECYCLE: Objects NOT in target → scattered (permanent), Objects in target → buffer (temporary)",
+                    "  - FORBIDDEN: Restoring unwanted objects from buffer back to stack",
+                    "  - Example correct sequence: red→buffer(temp), yellow→scattered(remove), green→middle, red→top",
                     "",
                     "TASK: Generate action plan for stacked arrangement with coordinate-free actions.",
                     "",
@@ -1147,7 +1198,7 @@ def generate_replan(target_spec: Dict[str, Any], current_state: Dict[str, Any]):
     result, raw = _generate_once(system_prompt, user_prompt)
 
     if result is None:
-        print(f"Generation failed. Raw: {repr(raw[:200])}")
+        print(f"Generation failed. Full Raw: {repr(raw)}")
         return None
 
     # 目标一致性验证
@@ -1190,8 +1241,8 @@ if __name__ == "__main__":
             "relationship": "stacked",
             "placements": [
                 {"position": "bottom", "object 1": "blue cube"},
-                {"position": "middle", "object 2": "green cube"},
-                {"position": "top", "object 3": "yellow cube"}
+                {"position": "middle", "object 2": "yellow cube"},
+                {"position": "top", "object 3": "red cube"}
             ]
         }
     }

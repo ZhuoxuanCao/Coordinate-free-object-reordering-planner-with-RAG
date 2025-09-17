@@ -8,15 +8,21 @@ A coordinate-free object reordering planner using Qwen3-4B-FP8 with RAG (Retriev
 
 ## Major Improvements (Latest Update)
 
-### 🎯 Stacking Extension Semantics
-- **Physical Stack Behavior**: Implemented natural stacking extension where adding objects on top automatically adjusts layer labels
-- **Minimal Action Planning**: 2→3 layer extensions now require only single action instead of redundant repositioning
-- **Extension vs Replacement**: Clear distinction between extending stack height and replacing wrong objects
+### 🎯 Stack Replacement Semantics (NEW)
+- **Physical Access Constraints**: Enforced proper layer clearing before accessing blocked positions
+- **Object Lifecycle Management**: Clear distinction between temporary storage (buffer) vs permanent removal (scattered)
+- **Physical Constraint Validation**: Cannot access middle/bottom objects when upper layers exist
+- **Complete Few-Shot Examples**: Real-world scenarios with 4-step replacement sequences
 
-### 🤖 Model Upgrade
-- **Upgraded from SmolLM3-3B to Qwen3-4B-FP8** for better rule comprehension and reasoning
-- **Improved Rule Understanding**: Better handling of complex rule systems and priority resolution
-- **Enhanced Few-Shot Learning**: More effective application of knowledge base examples
+### 🔧 Enhanced Stack Operations
+- **Extension vs Replacement**: Extension = adding layers; Replacement = fixing wrong objects
+- **Minimal Action Planning**: 2→3 layer extensions require only single action
+- **Complex Replacement Handling**: Multi-step clear→replace→restore sequences with proper object routing
+
+### 🤖 Model Upgrade & Rule Integration
+- **Upgraded from SmolLM3-3B to Qwen3-4B-FP8** for superior rule comprehension and reasoning
+- **Intelligent Rule Injection**: Automatic detection and injection of stack replacement rules
+- **Enhanced System Prompts**: Physical constraint guidance and object lifecycle instructions
 
 ## Core Architecture
 
@@ -276,7 +282,7 @@ SUPPORTED_RELATIONSHIPS = [
 ]
 ```
 
-## Knowledge Base Structure (17 Rules)
+## Knowledge Base Structure (18 Rules)
 
 ### Core Rules (`core_rules/`)
 - `unified_output_format.md`: Comprehensive JSON structure requirements for all object counts
@@ -284,7 +290,7 @@ SUPPORTED_RELATIONSHIPS = [
 - `stacked_output_format.md`: Stacked relationship specifics
 - `execution_order.md`: Action sequencing and timing rules
 - `task_definition.md`: Core task and constraint definitions
-- **`stacking_extension.md`**: **NEW** - Physical stacking semantics and extension vs replacement rules
+- `stacking_extension.md`: Physical stacking semantics and extension vs replacement rules
 
 ### Relationship Rules (`relationship_rules/`)
 - `stacked.md`: All stacked relationship variants (single, dual, triple objects)
@@ -303,10 +309,12 @@ SUPPORTED_RELATIONSHIPS = [
 
 ### Pattern Rules (`pattern_rules/`)
 - `bottom_up_building.md`: Construction sequence patterns
+- **`stack_replacement.md`**: **NEW** - Complete stack replacement patterns with physical constraints
 
 ### Rule Injection Logic
 - **Base Rules**: Always included for all scenarios
-- **Stacking Rules**: Automatically injected when target or current state contains stacking relationships
+- **Stacking Extension Rules**: Automatically injected when target or current state contains stacking relationships
+- **Stack Replacement Rules**: Automatically injected when replacement scenario detected (same position, different objects)
 - **Relationship-Specific Rules**: Injected based on target relationship type
 
 ## Key Design Principles
@@ -398,7 +406,13 @@ cd smollm3
 python replan_rag_system.py
 ```
 
-**Test 1**: Stacked Relationship - 2→3 Layer Extension ✅ **SUCCESSFUL**
+**Test 1**: Stacked Relationship - Middle Layer Replacement 🔧 **IN PROGRESS**
+- **Target**: 3-object vertical stack (bottom: blue cube, middle: green cube, top: red cube)
+- **Current State**: 3-layer stack with bottom: blue cube, middle: yellow cube (wrong), top: red cube
+- **Challenge**: Replace middle layer while respecting physical access constraints
+- **Expected Result**: 4-step sequence: clear top → remove wrong middle → place correct middle → restore top
+
+**Test 2**: Stacked Relationship - 2→3 Layer Extension ✅ **SUCCESSFUL**
 - **Target**: 3-object vertical stack (bottom: blue cube, middle: green cube, top: red cube)
 - **Current State**: 2-layer stack with bottom: blue cube, top: green cube
 - **Result**: **Perfect single-step extension** - Only places red cube on top
@@ -413,15 +427,13 @@ python replan_rag_system.py
   }
   ```
 
-**Test 2**: Stacked Relationship - Wrong Top Object (Disabled)
-- **Status**: Temporarily disabled for focused testing
-- **Expected**: Buffer-based correction to replace wrong top object
-
 **Key Achievements:**
 - ✅ **Physical stacking semantics working**: 2→3 extension requires only 1 action
-- ✅ **Intelligent rule injection**: Stacking extension rules automatically included
-- ✅ **Model comprehension**: Qwen3-4B-FP8 correctly understands extension vs replacement
-- ✅ **Natural language reasoning**: Proper explanation of automatic layer adjustment
+- ✅ **Stack replacement detection**: Automatic injection of replacement rules when conflicts detected
+- ✅ **Physical constraint enforcement**: Clear-above-first sequences properly defined
+- ✅ **Object lifecycle management**: Distinction between temporary storage vs permanent removal
+- ✅ **Enhanced rule injection**: Both extension and replacement rules intelligently applied
+- ✅ **Model comprehension**: Qwen3-4B-FP8 correctly understands extension vs replacement scenarios
 
 ## Dependencies
 
